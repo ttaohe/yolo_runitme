@@ -35,3 +35,4 @@ venv/
 
 .onnx
 3rdPart/
+3rdPart/*
