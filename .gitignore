@@ -1,0 +1,37 @@
+# Build artifacts
+build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/*.user
+**/*.vcxproj*
+**/*.sln
+**/Debug/
+**/Release/
+**/*.obj
+**/*.pdb
+**/*.ilk
+**/*.exp
+**/*.lib
+**/*.dll
+**/*.exe
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+*.DS_Store
+
+.onnx
+3rdPart/
