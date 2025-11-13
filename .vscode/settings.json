@@ -1,0 +1,11 @@
+{
+    "cmake.sourceDirectory": "F:/02-nm/jiaotou/yolo_runitme/objectdetection",
+    "cmake.outputLogEncoding": "utf-8",
+    "files.encoding": "utf8",
+    "cmake.generator": "Visual Studio 17 2022",
+       "cmake.configureArgs": ["-A", "x64"],
+       "cmake.configureSettings": {
+         "BUILD_PYBIND": "ON",
+         "USE_FETCHCONTENT_PYBIND11": "ON"
+        }
+}

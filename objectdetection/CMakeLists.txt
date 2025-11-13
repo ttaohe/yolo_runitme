@@ -26,11 +26,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Third-party default roots (inside repository)
-set(THIRDPARTY_ROOT "F:/02-nm/hjj-2/windows-x64/ObjectDetection/objectdetection/3rdPart" CACHE PATH "Root path for third-party dependencies")
+set(THIRDPARTY_ROOT "F:/02-nm/jiaotou/yolo_runitme/3rdPart" CACHE PATH "Root path for third-party dependencies")
 
 # OpenCV
 # 首选使用官方包配置；如不兼容则回退到手动链接 OpenCV 4.5.4 (world)
-set(OpenCV_DIR "F:/02-nm/hjj-2/windows-x64/ObjectDetection/objectdetection/3rdPart/opencv454-win/opencv/build")
+set(OpenCV_DIR "${THIRDPARTY_ROOT}/opencv454-win/opencv/build")
 find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs highgui dnn)
 if(OpenCV_FOUND)
   message(STATUS "OpenCV version: ${OpenCV_VERSION}")
