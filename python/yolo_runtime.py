@@ -345,6 +345,38 @@ class YoloRuntime:
 					cv2.putText(image_bgr, label, (x + 3, max(0, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 		return image_bgr
 
+	def boxes_to_mask(self, image_shape: Tuple[int, int, int], results: List[Dict[str, Any]],
+	                  filled: bool = True, per_class: bool = False) -> np.ndarray:
+		"""
+		根据检测框生成单通道掩码。
+		- filled=True 生成实心矩形；否则只绘制轮廓
+		- per_class=True 时，像素值使用 (class_id+1) 编码；否则使用 255 二值掩码
+		返回: HxW uint8
+		"""
+		import cv2
+		h = int(image_shape[0])
+		w = int(image_shape[1])
+		mask = np.zeros((h, w), dtype=np.uint8)
+		thickness = -1 if filled else 1
+		for det in results or []:
+			b = det.get("box", {})
+			x, y, bw, bh = int(b.get("x", 0)), int(b.get("y", 0)), int(b.get("w", 0)), int(b.get("h", 0))
+			if bw <= 0 or bh <= 0:
+				continue
+			x1 = max(0, x)
+			y1 = max(0, y)
+			x2 = min(w - 1, x + bw - 1)
+			y2 = min(h - 1, y + bh - 1)
+			if x2 < x1 or y2 < y1:
+				continue
+			if per_class:
+				val = int(det.get("class_id", 0)) + 1
+				val = 255 if val > 255 else val
+			else:
+				val = 255
+			cv2.rectangle(mask, (x1, y1), (x2, y2), int(val), thickness)
+		return mask
+
 	# 统计
 	def get_fps(self) -> float:
 		if self._t0 is None or self._num_done <= 0:

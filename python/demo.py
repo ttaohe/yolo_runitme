@@ -56,6 +56,9 @@ elif TASK == "big_single":
 		elif ev.get("kind") == "final":
 			engine.draw_on(vis, ev.get("results", []), draw_label=False, draw_conf=False)
 			print("FPS:", ev.get("fps", 0.0), ev.get("stats", {}))
+			# 生成并保存框的掩码（与大图同尺寸，二值255）
+			mask = engine.boxes_to_mask(vis.shape, ev.get("results", []), filled=True, per_class=False)
+			cv2.imwrite("mask.png", mask)
 	cv2.imwrite("res.jpg", vis)
 else:
 	raise SystemExit(f"Unknown TASK: {TASK}")
