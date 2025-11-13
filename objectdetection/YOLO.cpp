@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <regex>
+#include <opencv2/dnn.hpp>
 
 YOLO::YOLO() {
 }
@@ -62,6 +63,8 @@ bool YOLO::loadModel(const DL_INIT_PARAM& params, std::string& errorMessage) {
 		Ort::SessionOptions sessionOption;
 		sessionOption.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 		sessionOption.SetIntraOpNumThreads(params.intraOpNumThreads);
+		// 让 ORT 在算子内部与算子之间都能利用多核
+		sessionOption.SetInterOpNumThreads(params.intraOpNumThreads);
 		sessionOption.SetLogSeverityLevel(params.logSeverityLevel);
 
 #ifdef _WIN32
@@ -300,15 +303,25 @@ bool YOLO::infer(const cv::Mat& imageBgr, std::vector<DL_RESULT>& results) {
 	if (!session) return false;
 	PreprocessInfo pp;
 	cv::Mat input = preprocessLetterboxBgrToRgb(imageBgr, imgSize, pp);
-
-	std::vector<float> blob(static_cast<size_t>(3 * input.rows * input.cols));
-	blobFromImageCHW01(input, blob.data());
+	// 使用 OpenCV 优化的打包函数生成 CHW、归一化后的 float 张量
+	cv::Mat blobMat;
+	cv::dnn::blobFromImage(
+		input,            // 已经是 RGB 且已按 letterbox 填充
+		blobMat,
+		1.0 / 255.0,      // 归一化
+		cv::Size(),       // 保持原尺寸
+		cv::Scalar(),     // 不减均值
+		/*swapRB=*/false, // 已经是 RGB，无需再交换
+		/*crop=*/false,
+		CV_32F);
 
 	std::vector<int64_t> inputDims = { 1, 3, input.rows, input.cols };
 
 	Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
 		Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU),
-		blob.data(), blob.size(), inputDims.data(), inputDims.size());
+		reinterpret_cast<float*>(blobMat.data),
+		static_cast<size_t>(blobMat.total()),
+		inputDims.data(), inputDims.size());
 
 	std::vector<const char*> inNames, outNames;
 	inNames.reserve(inputNodeNames.size());
@@ -356,15 +369,23 @@ bool YOLO::inferBatch(const std::vector<cv::Mat>& imagesBgr, std::vector<std::ve
 	const int H = inputs[0].rows;
 	const int W = inputs[0].cols;
 	const size_t batch = inputs.size();
-	std::vector<float> blob(batch * 3 * H * W);
-	for (size_t b = 0; b < batch; ++b) {
-		float* dst = blob.data() + b * 3 * H * W;
-		blobFromImageCHW01(inputs[b], dst);
-	}
+	// 使用 OpenCV 一次性将一批 RGB 图像打包为 NxCxHxW float
+	cv::Mat blobMat;
+	cv::dnn::blobFromImages(
+		inputs,           // 预处理后 RGB
+		blobMat,
+		1.0 / 255.0,
+		cv::Size(),
+		cv::Scalar(),
+		/*swapRB=*/false, // 已经是 RGB
+		/*crop=*/false,
+		CV_32F);
 	std::vector<int64_t> inputDims = { static_cast<int64_t>(batch), 3, H, W };
 	Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
 		Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU),
-		blob.data(), blob.size(), inputDims.data(), inputDims.size());
+		reinterpret_cast<float*>(blobMat.data),
+		static_cast<size_t>(blobMat.total()),
+		inputDims.data(), inputDims.size());
 
 	std::vector<const char*> inNames, outNames;
 	inNames.reserve(inputNodeNames.size());

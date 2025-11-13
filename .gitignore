@@ -33,6 +33,9 @@ venv/
 *.log
 *.DS_Store
 
-.onnx
+python/*.onnx
+python/*.jpg
+python/*.png
+
 3rdPart/
 3rdPart/*
