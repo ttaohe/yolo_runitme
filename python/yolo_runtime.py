@@ -3,6 +3,7 @@ import queue
 import time
 from typing import List, Tuple, Optional, Dict, Any, Union, Set
 import numpy as np
+import os
 
 try:
 	import yolort  # pybind11 module
@@ -125,7 +126,8 @@ class YoloRuntime:
 		if yolort is None:
 			raise RuntimeError("yolort(pybind11) module not found or failed to load")
 		self._engine = yolort.PyYolo()
-		ok = self._engine.load_model(model_path, img_size[1], img_size[0], conf, iou, 1, 1, 3)
+		cpu_threads = max(1, (os.cpu_count() or 1))
+		ok = self._engine.load_model(model_path, img_size[1], img_size[0], conf, iou, 1, cpu_threads, 3)
 		if not ok:
 			raise RuntimeError("load_model failed")
 		if classes:
@@ -143,6 +145,7 @@ class YoloRuntime:
 		self._images_q: "queue.Queue[Dict[str, Any]]" = queue.Queue(max_queue)
 		self._tiles_q: "queue.Queue[Dict[str, Any]]" = queue.Queue(max_queue * 4)
 		self._results_q: "queue.Queue[Dict[str, Any]]" = queue.Queue(max_queue)
+		self._tile_results_q: "queue.Queue[Dict[str, Any]]" = queue.Queue(max_queue * 8)
 		self._expected_tiles: Dict[str, int] = {}
 		self._processed_tiles: Dict[str, int] = {}
 		self._acc_results: Dict[str, List[Dict[str, Any]]] = {}
@@ -202,6 +205,66 @@ class YoloRuntime:
 			img = cv2.resize(img, (self._img_size[0], self._img_size[1]), interpolation=cv2.INTER_LINEAR)
 		self.submit(img, image_id=image_id, sliding=sliding, tile_size=tile_size, overlap=overlap)
 
+	# 简化接口：小图/大图/批量任务
+	def submit_small_image_path(self, image_path: str, image_id: str) -> None:
+		self.submit_path(image_path, image_id=image_id, sliding=False, resize_to_input=False)
+
+	def submit_big_image_path(self, image_path: str, image_id: str, tile_size: Optional[Tuple[int, int]] = None,
+	                          overlap: Optional[float] = None) -> None:
+		self.submit_path(image_path, image_id=image_id, sliding=True, tile_size=tile_size, overlap=overlap, resize_to_input=False)
+
+	# 一次性小图推理（同步），返回 (results, stats)
+	def infer_small_image_path(self, image_path: str, timeout: Optional[float] = 10.0) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+		self.reset_stats()
+		image_id = "small"
+		self.submit_small_image_path(image_path, image_id=image_id)
+		res = self.get_result(image_id, timeout=timeout) or []
+		return res, self.get_stats()
+
+	# 大图滑窗流式推理（同步生成器）：逐 tile 产出 {'kind':'tile', 'ox','oy','results','tile_fps',...}，结束产出 {'kind':'final', 'results','fps','stats'}
+	def infer_big_image_stream_path(self, image_path: str,
+	                                tile_size: Optional[Tuple[int, int]] = None,
+	                                overlap: Optional[float] = None,
+	                                timeout_final: Optional[float] = 60.0):
+		import cv2
+		img = cv2.imread(image_path)
+		if img is None:
+			raise RuntimeError(f"Failed to read image: {image_path}")
+		yield from self.infer_big_image_stream(img, tile_size=tile_size, overlap=overlap, timeout_final=timeout_final)
+
+	def infer_big_image_stream(self, image_bgr: np.ndarray,
+	                           tile_size: Optional[Tuple[int, int]] = None,
+	                           overlap: Optional[float] = None,
+	                           timeout_final: Optional[float] = 60.0):
+		self.reset_stats()
+		image_id = "big"
+		self.submit(image_bgr, image_id=image_id, sliding=True, tile_size=tile_size, overlap=overlap)
+		deadline = None if timeout_final is None else (time.time() + timeout_final)
+		while True:
+			# 产出 tile
+			try:
+				item = self._tile_results_q.get(timeout=0.1)
+			except queue.Empty:
+				item = None
+			if item is not None and item.get("id") == image_id:
+				tstats = self.get_tile_stats()
+				yield {
+					"kind": "tile",
+					"ox": int(item.get("ox", 0)),
+					"oy": int(item.get("oy", 0)),
+					"results": item.get("results", []),
+					"tiles_done": tstats.get("tiles_done", 0),
+					"tiles_total": tstats.get("tiles_total", 0),
+					"tile_fps": tstats.get("fps", 0.0),
+				}
+			# 检查最终结果
+			final = self.get_result(image_id, timeout=0.0)
+			if final is not None:
+				yield {"kind": "final", "results": final, "fps": self.get_fps(), "stats": self.get_stats()}
+				break
+			if deadline is not None and time.time() >= deadline:
+				break
+
 	def get_result(self, image_id: str, timeout: Optional[float] = None) -> Optional[List[Dict[str, Any]]]:
 		deadline = None if timeout is None else (time.time() + timeout)
 		while True:
@@ -247,6 +310,40 @@ class YoloRuntime:
 				cv2.rectangle(vis, (x, max(0, y - th - 6)), (x + tw + 6, y), color, -1)
 				cv2.putText(vis, label, (x + 3, max(0, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 		return vis
+
+	def draw_on(self, image_bgr: np.ndarray, results: List[Dict[str, Any]],
+	            color: Tuple[int, int, int] = (0, 0, 255), thickness: int = 2,
+	            draw_label: Optional[bool] = None, draw_conf: Optional[bool] = None) -> np.ndarray:
+		"""
+		在给定图像上原地绘制，返回同一图像对象（便于大图流式可视化，避免复制）。
+		"""
+		if draw_label is None:
+			draw_label = getattr(self, "_show_label", True)
+		if draw_conf is None:
+			draw_conf = getattr(self, "_show_conf", True)
+		try:
+			classes = self._engine.get_classes()
+		except Exception:
+			classes = []
+		import cv2
+		for det in results or []:
+			b = det.get("box", {})
+			x, y, w, h = int(b.get("x", 0)), int(b.get("y", 0)), int(b.get("w", 0)), int(b.get("h", 0))
+			cv2.rectangle(image_bgr, (x, y), (x + w, y + h), color, thickness)
+			if draw_label or draw_conf:
+				label_parts = []
+				if draw_label:
+					cid = int(det.get("class_id", 0))
+					name = classes[cid] if (cid >= 0 and cid < len(classes)) else str(cid)
+					label_parts.append(str(name))
+				if draw_conf:
+					label_parts.append(f'{float(det.get("confidence", 0.0)):.2f}')
+				if label_parts:
+					label = " ".join(label_parts)
+					(tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+					cv2.rectangle(image_bgr, (x, max(0, y - th - 6)), (x + tw + 6, y), color, -1)
+					cv2.putText(image_bgr, label, (x + 3, max(0, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+		return image_bgr
 
 	# 统计
 	def get_fps(self) -> float:
@@ -378,6 +475,11 @@ class YoloRuntime:
 					b["x"] += ox
 					b["y"] += oy
 					shifted.append({"class_id": int(r["class_id"]), "confidence": float(r["confidence"]), "box": b})
+				# 推送流式 tile 结果
+				try:
+					self._tile_results_q.put_nowait({"id": image_id, "ox": ox, "oy": oy, "results": shifted})
+				except Exception:
+					pass
 				with self._lock:
 					self._acc_results[image_id].extend(shifted)
 					self._tiles_done += 1
